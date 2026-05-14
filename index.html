@@ -1,0 +1,1348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="MANIEDUHUB — digital classroom for pharmacy: notes, library, quizzes, lectures, and AI study tools.">
+    <meta name="theme-color" content="#020617">
+    <title>MANIEDUHUB Pro — Digital Classroom</title>
+    <!--
+      Cloudinary (smooth signups with profile photos): https://console.cloudinary.com/app/c-c51f84a38010c28e2490ec6fa58f0f/home/dashboard
+      1) Create a free account. 2) Dashboard → copy your "dyky9sbxa".
+      3) Settings → Upload → Upload presets → Add upload preset → Signing mode: Unsigned → save → copy the preset name.
+      4) Put both strings into MANIEDUHUB_CONFIG below (CLOUDINARY_NAME, CLOUDINARY_PRESET). Optional: CLOUDINARY_FOLDER tags uploads in your Media Library.
+    -->
+    <script>
+        window.MANIEDUHUB_CONFIG = window.MANIEDUHUB_CONFIG || {
+            API_BASE: '',
+            ADMIN_PASS: 'admin123',
+            CLOUDINARY_NAME: '',
+            CLOUDINARY_PRESET: '',
+            CLOUDINARY_FOLDER: 'manieduhub_profiles'
+        };
+    </script>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;900&display=swap" rel="stylesheet">
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Outfit', 'sans-serif'] },
+                    colors: { primary: '#6366f1', secondary: '#a855f7', accent: '#f43f5e', dark: '#020617' },
+                    animation: { 'tilt': 'tilt 10s infinite linear', 'slide-up': 'slideUp 0.7s ease-out forwards' },
+                    keyframes: {
+                        tilt: { '0%, 50%, 100%': { transform: 'rotate(0deg)' }, '25%': { transform: 'rotate(1deg)' }, '75%': { transform: 'rotate(-1deg)' } },
+                        slideUp: { '0%': { transform: 'translateY(2rem)', opacity: '0' }, '100%': { transform: 'translateY(0)', opacity: '1' } }
+                    }
+                }
+            }
+        }
+    </script>
+    <style type="text/css">
+        :root { --glass-bg: rgba(15, 23, 42, 0.7); --glass-border: rgba(255, 255, 255, 0.1); }
+        body { background-color: #020617; color: #f8fafc; margin: 0; overflow-x: hidden; font-family: 'Outfit', sans-serif; }
+        #three-canvas { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; }
+        .glass { background: var(--glass-bg); backdrop-filter: blur(16px); border: 1px solid var(--glass-border); }
+        .glass-card { background: rgba(255, 255, 255, 0.03); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.08); transition: all 0.4s ease; }
+        .glass-card:hover { background: rgba(255, 255, 255, 0.06); transform: translateY(-5px); border-color: rgba(255,255,255,0.2); }
+        .text-gradient { background: linear-gradient(135deg, #818cf8 0%, #c084fc 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 10px; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+        .animate-fade-in { animation: fade-in 0.5s ease-out forwards; }
+        .nav-drawer { transform: translateX(100%); transition: transform 0.3s ease; }
+        .nav-drawer.open { transform: translateX(0); }
+    </style>
+</head>
+<body>
+    <div id="three-canvas"></div>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, Fragment, useRef, useCallback } = React;
+
+        const MW = typeof window !== 'undefined' ? (window.MANIEDUHUB_CONFIG || {}) : {};
+        const ADMIN_PASS = MW.ADMIN_PASS || 'admin123';
+        const SERVER_HOSTED = typeof window !== 'undefined' && window.location.protocol !== 'file:';
+        const API_ROOT = !SERVER_HOSTED
+            ? null
+            : (MW.API_BASE !== undefined && MW.API_BASE !== null ? String(MW.API_BASE) : '');
+        const apiUrl = (path) => (API_ROOT === null ? null : (API_ROOT === '' ? path : API_ROOT.replace(/\/$/, '') + path));
+
+        // --- CLOUDINARY (required on http/https — profile URLs are stored on your server DB, image files on Cloudinary) ---
+        const CLOUDINARY_NAME = (MW.CLOUDINARY_NAME || '').trim();
+        const CLOUDINARY_PRESET = (MW.CLOUDINARY_PRESET || '').trim();
+        const CLOUDINARY_FOLDER = (MW.CLOUDINARY_FOLDER || '').trim();
+        const CLOUDINARY_READY = !!(CLOUDINARY_NAME && CLOUDINARY_PRESET);
+
+        const uploadToCloudinary = async (file) => {
+            if (!CLOUDINARY_READY) {
+                if (SERVER_HOSTED) {
+                    throw new Error('Cloudinary: set CLOUDINARY_NAME and CLOUDINARY_PRESET in index.html (see the HTML comment above MANIEDUHUB_CONFIG). Dashboard: https://console.cloudinary.com');
+                }
+                return new Promise((resolve) => {
+                    const r = new FileReader();
+                    r.onload = ev => resolve(ev.target.result);
+                    r.readAsDataURL(file);
+                });
+            }
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('upload_preset', CLOUDINARY_PRESET);
+            if (CLOUDINARY_FOLDER) formData.append('folder', CLOUDINARY_FOLDER);
+            const response = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_NAME}/image/upload`, {
+                method: 'POST',
+                body: formData
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error?.message || "Upload failed");
+            return data.secure_url;
+        };
+
+        /** Normalize quiz items (embedded data uses questionText/answerOptions; UI uses q/o/c). */
+        const normalizeQuizQuestion = (raw) => {
+            if (!raw) return { q: '', o: [], c: 0 };
+            if (raw.q != null && Array.isArray(raw.o)) {
+                return { q: String(raw.q), o: raw.o.map((x) => String(x)), c: Math.max(0, Number(raw.c) || 0) };
+            }
+            const opts = raw.answerOptions || [];
+            const c = opts.findIndex((a) => a && a.isCorrect);
+            const o = opts.length ? opts.map((a) => (a && a.answerText != null ? String(a.answerText) : '')) : (Array.isArray(raw.o) ? raw.o.map(String) : []);
+            return { q: String(raw.questionText || raw.q || ''), o, c: c >= 0 ? c : Math.max(0, Number(raw.c) || 0) };
+        };
+
+        const mapQuizData = (data) => {
+            if (!data || typeof data !== 'object') return data;
+            const out = {};
+            for (const s of Object.keys(data)) {
+                out[s] = {};
+                for (const u of Object.keys(data[s])) {
+                    out[s][u] = {};
+                    for (const t of Object.keys(data[s][u])) {
+                        const arr = data[s][u][t];
+                        out[s][u][t] = Array.isArray(arr) ? arr.map(normalizeQuizQuestion) : arr;
+                    }
+                }
+            }
+            return out;
+        };
+
+        // --- ALL RECOVERED NOTES DATA ---
+        const fullPharm = [
+            { title: "Unit 1: General Pharmacology", links: [
+                { text: "Introduction and scope of Pharmacology (PDF)", url: "#" },
+                { text: "Various routes of drug administration (PDF)", url: "#" },
+                { text: "Drug absorption (PDF)", url: "https://drive.google.com/file/d/1FHzrNidaYmbppMHM04vpFXPFaVY-8W7W/view?usp=drive_link" },
+                { text: "Bioavailability (PDF)", url: "https://drive.google.com/file/d/1IJSDEErh0iiA0duQJta3cFUDv8gqzDuM/view?usp=drive_link" },
+                { text: "Drug distribution (PDF)", url: "https://drive.google.com/file/d/1fTz0Xau_xNa3n_XOXKjiEnU-NyANEZfS/view?usp=drive_link" },
+                { text: "Biotransformation of drugs (PDF)", url: "#" },
+                { text: "Excretion of drugs (PDF)", url: "#" },
+                { text: "General mechanisms of drug action (PDF)", url: "#" }
+            ]},
+            { title: "Unit 2: Drugs Acting on PNS", links: [
+                { text: "Cholinergic drugs (PDF)", url: "#" },
+                { text: "Anti-Cholinergic drugs (PDF)", url: "https://drive.google.com/file/d/11go-7vUd4sU2CPFBX5wEfTr34QrE-N7-/view?usp=drive_link" },
+                { text: "Adrenergic drugs (PDF)", url: "#" },
+                { text: "Anti-adrenergic drugs (PDF)", url: "#" },
+                { text: "Neuromuscular blocking agents (PDF)", url: "https://drive.google.com/file/d/138XlL09egUk2Y87hDNzJK23vFWkLAvnL/view?usp=drive_link" },
+                { text: "Drugs used in Myasthenia gravis (PDF)", url: "#" },
+                { text: "Local anaesthetic agents (PDF)", url: "https://drive.google.com/file/d/1BQgTr3yDlSH72RYv8ckkuJSGhok1eyhh/view?usp=drive_link" },
+                { text: "NSAIDs (PDF)", url: "#" }
+            ]},
+            { title: "Unit 3: Drugs Acting on the Eye", links: [
+                { text: "Miotics (PDF)", url: "https://drive.google.com/file/d/10Fbp2YrWsLM9Guk1NnufXYYAXaM4Ueoo/view?usp=drive_link" },
+                { text: "Mydriatics (PDF)", url: "https://drive.google.com/file/d/10Fbp2YrWsLM9Guk1NnufXYYAXaM4Ueoo/view?usp=drive_link" },
+                { text: "Drugs used in Glaucoma (PDF)", url: "https://drive.google.com/file/d/10Fbp2YrWsLM9Guk1NnufXYYAXaM4Ueoo/view?usp=drive_link" }
+            ]},
+            { title: "Unit 4: Drugs Acting on CNS", links: [
+                { text: "General anaesthetics (PDF)", url: "https://drive.google.com/file/d/1hPrRmSYQpi87aYxDdcx2iXVvVtiEPNs_/view?usp=drive_link" },
+                { text: "Hypnotics and sedatives (PDF)", url: "https://drive.google.com/file/d/1qupa1DaSHo3RM9SnPsUB-I4FTMQfzeie/view?usp=drive_link" },
+                { text: "Anti-Convulsant drugs (PDF)", url: "https://drive.google.com/file/d/1WehTFGMMcm-IAAI2Tdey8G_-HPx_rSih/view?usp=drive_link" },
+                { text: "Anti-anxiety drugs (PDF)", url: "https://drive.google.com/file/d/1LM71LJp8bWuopfY2jk96QtEeKbz2k2cG/view?usp=drive_link" },
+                { text: "Anti-depressant drugs (PDF)", url: "https://drive.google.com/file/d/1wDA31Rkw-3pHPC9LT-xlZE8cW8FmDc-n/view?usp=drive_link" },
+                { text: "Anti-psychotics (PDF)", url: "https://drive.google.com/file/d/1wra0D8NuOiu8bppbReItIJ-_Bo78gNsB/view?usp=drive_link" },
+                { text: "Nootropic agents (PDF)", url: "https://drive.google.com/file/d/1llSKN40joWpBrOiXcq6cWgOrtEueO9Tk/view?usp=drive_link" },
+                { text: "Centrally acting muscle relaxants (PDF)", url: "https://drive.google.com/file/d/1z0wRoMc_SAfjeYSkrebDKkLlxH32m0iH/view?usp=drive_link" },
+                { text: "Opioid analgesics (PDF)", url: "https://drive.google.com/file/d/1FvoDOoHONKwxr_mNcpeGYa2ZGsku9rth/view?usp=drive_link" }
+            ]},
+            { title: "Unit 5: Cardiovascular System", links: [
+                { text: "Anti-hypertensive drugs (PDF)", url: "https://drive.google.com/file/d/1uNU1E_egH5NSkqiVkZuFKcMvsboEpAea/view?usp=drive_link" },
+                { text: "Anti-anginal drugs (PDF)", url: "https://drive.google.com/file/d/1wYA65hygoO1D0SLwHO6OxUQc1oOua53N/view?usp=drive_link" },
+                { text: "Anti-arrhythmic drugs (PDF)", url: "https://drive.google.com/file/d/1CYS0PIZgH_ZgHsEqQpYr0wp681Z8gqSB/view?usp=drive_link" },
+                { text: "Drugs used in atherosclerosis & CHF (PDF)", url: "https://drive.google.com/drive/folders/1cmIvxsf1RO7aa8gU3g0ks8zROMKn8uZA?usp=drive_link" },
+                { text: "Drug therapy for shock (PDF)", url: "https://drive.google.com/file/d/1rGwAtkPSeNkg4rKhtlFKzj77cSZP-MOJ/view?usp=drive_link" }
+            ]},
+            { title: "Unit 6: Drugs Acting on Blood", links: [
+                { text: "Hematinic agents (PDF)", url: "https://drive.google.com/file/d/1hsh92xu0QvC9NKywbqAQBsX_1Dkmj6vE/view?usp=drive_link" },
+                { text: "Anti-coagulants (PDF)", url: "https://drive.google.com/file/d/1mPPvXoKE-F67Z1z1z0EKECtn3n2Fh72i/view?usp=drive_link" },
+                { text: "Anti-platelet agents (PDF)", url: "https://drive.google.com/file/d/1ufvtx9Q09ZjrppX8XX-91EJUS8FIaCld/view?usp=drive_link" },
+                { text: "Thrombolytic drugs (PDF)", url: "https://drive.google.com/file/d/1nr7eg36KBA-5mb_80bLrObVrbXPpryPl/view?usp=drive_link" }
+            ]},
+            { title: "Unit 7: Respiratory System", links: [
+                { text: "Bronchodilators (PDF)", url: "https://drive.google.com/file/d/14dGLLARqCQ5qQx5gv-PWmaTEDN9GM6Hf/view?usp=drive_link" },
+                { text: "Expectorants (PDF)", url: "https://drive.google.com/file/d/1Wxi0v_VjoyuZpFvlNLHu8lyRpEk1DnOG/view?usp=drive_link" },
+                { text: "Anti-tussive agents (PDF)", url: "https://drive.google.com/file/d/1BXqOf2lgrX3YsryPUW-hEyperQ1kE6ma/view?usp=drive_link" },
+                { text: "Mucolytic agents (PDF)", url: "https://drive.google.com/file/d/11CrzOLtMpV9DqRl9TJboqHOhsfR0V_Iy/view?usp=drive_link" }
+            ]},
+            { title: "Unit 8: Gastro Intestinal Tract", links: [
+                { text: "Anti-ulcer drugs (PDF)", url: "https://drive.google.com/file/d/11n73ao12jAREAaKkXuSHaeWgvVYSQwDI/view?usp=drive_link" },
+                { text: "Anti-emetics (PDF)", url: "https://drive.google.com/file/d/1EUoYncVcqUD6eYPDhx2whfGxWdP70uft/view?usp=drive_link" },
+                { text: "Laxatives and purgatives (PDF)", url: "https://drive.google.com/file/d/1--UzzWTGssfXE3-beDqI-etEs5Ji6xxO/view?usp=drive_link" },
+                { text: "Anti-diarrheal drugs (PDF)", url: "https://drive.google.com/file/d/16VNMUX1eyQm-bOBZDzrxagToJ0WQKWwV/view?usp=drive_link" }
+            ]},
+            { title: "Unit 9: Drugs Acting on the Kidney", links: [
+                { text: "Diuretics (PDF)", url: "https://drive.google.com/file/d/1jJ2cpMw1ISdqKzGrdbcHCyah_HiZsk8r/view?usp=drive_link" },
+                { text: "Anti-Diuretics (PDF)", url: "#" }
+            ]},
+            { title: "Unit 10: Hormones", links: [
+                { text: "Thyroid hormones & Anti-thyroid drugs (PDF)", url: "https://drive.google.com/file/d/1xDwp6J_GgneXp4EITrEMho6m4PYmozVh/view?usp=drive_link" },
+                { text: "Parathormone, Calcitonin & Vitamin D (PDF)", url: "#" },
+                { text: "Insulin & Oral hypoglycemic agents (PDF)", url: "#" },
+                { text: "Estrogen & Progesterone (PDF)", url: "#" },
+                { text: "Oxytocin (PDF)", url: "#" },
+                { text: "Corticosteroids (PDF)", url: "#" }
+            ]},
+            { title: "Unit 11: Autocoids", links: [
+                { text: "Histamine, 5-HT, and Prostaglandins (PDF)", url: "#" },
+                { text: "Antihistamines and 5-HT antagonists (PDF)", url: "#" }
+            ]},
+            { title: "Unit 12: Chemotherapeutic Agents", links: [
+                { text: "Penicillins & Cephalosporins (PDF)", url: "https://drive.google.com/file/d/1ymEP-1Z4Zlt2BBC7v-ghMf9nlVMVmK8O/view?usp=drive_link" },
+                { text: "Aminoglycosides, Macrolides & Tetracyclines (PDF)", url: "https://drive.google.com/drive/folders/16n_Passql8SP3zukKmMjp6BQWicxKYbE?usp=drive_link" },
+                { text: "Sulphonamides (PDF)", url: "https://drive.google.com/file/d/1a4woZfhr_wQ6eCb2DpRLgp5-uEpgKGFF/view?usp=drive_link" },
+                { text: "Anti-tubercular drugs (PDF)", url: "https://drive.google.com/file/d/11Ja4Ehuhy2HzT0GGq9r4LPjLbJ4Oa2sY/view?usp=drive_link" },
+                { text: "Anti-fungal drugs (PDF)", url: "https://drive.google.com/file/d/1XRN4d5KtCy1cfIKpMUw4sgS6kqTmxR3k/view?usp=drive_link" },
+                { text: "Anti-viral drugs (PDF)", url: "https://drive.google.com/file/d/1eEZb8lEtprnFycXvMQdYCJJmG9QVQYmn/view?usp=drive_link" },
+                { text: "Anti-amoebic & Anthelmintics (PDF)", url: "#" },
+                { text: "Anti-malarial & Anti-neoplastic agents (PDF)", url: "https://drive.google.com/drive/folders/1mBkBM7yR-UswlTtTf6jjN4JKt_6aQsX2?usp=drive_link" }
+            ]},
+            { title: "Unit 13: Biologicals", links: [
+                { text: "Definition, types, and indications (PDF)", url: "https://drive.google.com/file/d/1lunYbBXWXVlXfHpn7CowJj2z-CzJCnaN/view?usp=drive_link" }
+            ]}
+        ];
+
+        const fullQuiz = {
+            "Pharmacology": {
+                "Unit 1: General Pharmacology": {
+                    "General Principles": [
+                        { questionText: "What is the primary mechanism of action for NSAIDs?", answerOptions: [{ answerText: "Inhibition of reverse transcriptase", isCorrect: false }, { answerText: "Inhibition of cyclooxygenase (COX) enzymes", isCorrect: true }, { answerText: "Blockade of beta-adrenergic receptors", isCorrect: false }, { answerText: "Activation of GABA receptors", isCorrect: false }] },
+                        { questionText: "What drug is typically used as the first line of treatment for anaphylactic shock?", answerOptions: [{ answerText: "Epinephrine", isCorrect: true }, { answerText: "Diphenhydramine", isCorrect: false }, { answerText: "Aspirin", isCorrect: false }, { answerText: "Atropine", isCorrect: false }] },
+                        { questionText: "Which organ is primarily responsible for the biotransformation of drugs?", answerOptions: [{ answerText: "Kidney", isCorrect: false }, { answerText: "Lungs", isCorrect: false }, { answerText: "Stomach", isCorrect: false }, { answerText: "Liver", isCorrect: true }] }
+                    ]
+                }
+            },
+            "Pathophysiology": {
+                "Unit 1: Cell Injury": {
+                    "Asthma & Atherosclerosis": [
+                        { questionText: "Which of the following is a classic symptom of Asthma?", answerOptions: [{ answerText: "Bradycardia", isCorrect: false }, { answerText: "Hypoglycemia", isCorrect: false }, { answerText: "Wheezing", isCorrect: true }, { answerText: "Jaundice", isCorrect: false }] },
+                        { questionText: "Atherosclerosis involves the buildup of what substance in artery walls?", answerOptions: [{ answerText: "Beta-amyloid plaques", isCorrect: false }, { answerText: "Cholesterol and lipid plaques", isCorrect: true }, { answerText: "Uric acid crystals", isCorrect: false }, { answerText: "Calcium oxalate stones", isCorrect: false }] }
+                    ]
+                }
+            }
+        };
+
+        const fullAiLinks = [
+            { category: "Research", name: "ChatGPT", description: "OpenAI's powerful conversational agent. Excellent for summarizing complex medical articles and generating study guides.", url: "https://chatgpt.com" },
+            { category: "Analysis", name: "Claude", description: "Anthropic's AI assistant. Highly capable in handling large PDF textbook uploads for quick knowledge extraction.", url: "https://claude.ai" },
+            { category: "Search", name: "Perplexity", description: "An AI search engine that provides cited answers, crucial for researching accurate pharmacological mechanisms.", url: "https://perplexity.ai" }
+        ];
+
+        const fullPath = [
+            {
+                title: "Unit 1: Cell Injury, Inflammation & Repair",
+                links: [
+                    { text: "Basic principles of Cell injury and Adaptation (PDF)", url: "https://drive.google.com/file/d/1Ir7QoYx3ZpAHZDVdxg3-remFFpiuZySQ/view?usp=drive_link" },
+                    { text: "Inflammation and repair (PDF)", url: "https://drive.google.com/file/d/1-6WBEFHasfUQEzeQlj4KxvjtIICOu1ca/view?usp=drive_link" },
+                    { text: "Pathophysiology of Atherosclerosis (PDF)", url: "https://drive.google.com/file/d/1ozrRdQiDmXJWSFqZWSXruApLjzS6CehF/view?usp=drive_link" }
+                ]
+            },
+            {
+                title: "Unit 2: Systemic Pathophysiology I",
+                links: [
+                    { text: "Cardiovascular System (Hypertension, CHF, Atherosclerosis , MI) (PDF)", url: "https://drive.google.com/drive/folders/1NUfdzAgrj7gapG_VfeHIUjdMC1pJk5i6?usp=drive_link" },
+                    { text: "Respiratory system (Asthma, COPD) (PDF)", url: "https://drive.google.com/drive/folders/1IQozLjTKlG475Zbh6m34U5pnpvL4EAM1?usp=drive_link" },
+                    { text: "Renal system (Acute and chronic renal failure) (PDF)", url: "https://drive.google.com/drive/folders/1eeGNpFgckDAKzr3PXWR7Zbc63-lOdiv8?usp=drive_link" }
+                ]
+            },
+            {
+                title: "Unit 3: Systemic Pathophysiology II",
+                links: [
+                    { text: "Haematological Diseases (PDF)", url: "https://drive.google.com/file/d/19zyELv-J8FBfxkG35Dq7qOzj_npprmYn/view?usp=drive_link" },
+                    { text: "Endocrine system (Diabetes, Thyroid) (PDF)", url: "https://drive.google.com/drive/folders/1nOxq5Z8TV2JQWlwjsXUT4DSBh7io3yZv?usp=drive_link" },
+                    { text: "Nervous system (Epilepsy, Parkinson's, Stroke, Depression, Alzheimer, Schizophrenia) (PDF)", url: "https://drive.google.com/drive/folders/1Om-VLXRaW1IGF8VPdQxPOJZ97DAe4BoC?usp=drive_link" },
+                    { text: "Gastrointestinal system (Peptic Ulcer) (PDF)", url: "https://drive.google.com/file/d/1fg4AicQGBffhjjJsDUhHY6jdvFpF-Cpt/view?usp=drive_link" }
+                ]
+            },
+            {
+                title: "Unit 4: Systemic Pathophysiology III",
+                links: [
+                    { text: "Inflammatory bowel diseases (PDF)", url: "https://drive.google.com/file/d/1IUlg8MXFfaDFMFbtMaNin59plp7nMFdq/view?usp=drive_link" },
+                    { text: "Jaundice & Hepatitis (PDF)", url: "https://drive.google.com/drive/folders/1KI6ddhe7CmMe8ysl_QavMrDsfmsQSsWi?usp=drive_link" },
+                    { text: "Disease of bones and joints (RA, Osteoporosis) (PDF)", url: "https://drive.google.com/drive/folders/1yp2Xl0Wrkke-JF5uY0tSyryuU2cnIhtc?usp=drive_link" },
+                    { text: "Principles of cancer (PDF)", url: "https://drive.google.com/file/d/19lUPS0mRZARdyE0zWZJV04U-_ZSg4xw0/view?usp=drive_link" }
+                ]
+            },
+            {
+                title: "Unit 5: Infectious Diseases",
+                links: [
+                    { text: "Meningitis, Typhoid, Leprosy, Tuberculosis (PDF)", url: "https://drive.google.com/drive/folders/1mNFywHrz2DpEhtMts26aXm7uATNULGt-?usp=drive_link" },
+                    { text: "Urinary tract infections (PDF)", url: "https://drive.google.com/file/d/148bR21hv-LXOEeZ8cAPR2HL7_Hlq-mpq/view?usp=drive_link" },
+                    { text: "Sexually transmitted diseases (AIDS, Syphilis, Gonorrhoea) (PDF)", url: "https://drive.google.com/drive/folders/1D_ALPaj-x0i7iCONc-3Fun4z-dwE7Esa?usp=drive_link" }
+                ]
+            }
+        ];
+
+        const SESSION_USER_KEY = 'manieduhub_session_user';
+        const DEFAULT_EMBED_VIDEO = 'https://www.youtube.com/embed/videoseries?list=UUFMyvEAeVD5RsFd1gEv6D7w';
+        const DEFAULT_LIBRARY = {
+            Pharmacology: [{ title: 'Pharmacology Essentials', author: 'K.D. Tripathi', color: '#6366f1', url: 'https://drive.google.com' }],
+            Pathophysiology: [{ title: 'Pathophysiology', author: 'Robbins', color: '#06b6d4', url: 'https://drive.google.com' }]
+        };
+        const defaultAboutData = () => ({
+            name: 'C. Mani Murugan',
+            title: 'Assistant Professor',
+            description: 'My mission is to transform the complex world of pharmacy into an engaging digital experience. Together, we will bridge the gap between theory and excellence.',
+            imageUrl: 'photo/IMG_4521.JPG',
+            social: { instagram: '@manimurugan', linkedin: 'manimurugan-pharm', phone: '+91 123 456 7890', email: 'mani@manieduhub.com', youtube: 'ManieduHub' }
+        });
+        function readSessionUser() {
+            if (!SERVER_HOSTED) return null;
+            try {
+                const raw = sessionStorage.getItem(SESSION_USER_KEY);
+                return raw ? JSON.parse(raw) : null;
+            } catch {
+                return null;
+            }
+        }
+        function writeSessionUser(u) {
+            if (!SERVER_HOSTED) return;
+            if (u) sessionStorage.setItem(SESSION_USER_KEY, JSON.stringify(u));
+            else sessionStorage.removeItem(SESSION_USER_KEY);
+        }
+
+        const App = () => {
+            const [user, setUser] = useState(() => readSessionUser());
+            const [isAdmin, setIsAdmin] = useState(false);
+            const [adminKey, setAdminKey] = useState('');
+            const [activeTab, setActiveTab] = useState('home');
+            const [navOpen, setNavOpen] = useState(false);
+            const [booting, setBooting] = useState(() => apiUrl('/api/config') != null);
+            const [cloudOk, setCloudOk] = useState(false);
+            const [loadError, setLoadError] = useState(false);
+            const [fetchDebug, setFetchDebug] = useState({ tried: '', detail: '' });
+
+            const [subjects, setSubjects] = useState(() => ({ pharmacology: fullPharm, pathophysiology: fullPath }));
+            const [library, setLibrary] = useState(() => DEFAULT_LIBRARY);
+            const [quizzes, setQuizzes] = useState(() => mapQuizData({ ...fullQuiz }));
+            const [students, setStudents] = useState(() => []);
+            const [leaderboards, setLeaderboards] = useState(() => ({}));
+            const [notifications, setNotifications] = useState(() => []);
+            const [videoLink, setVideoLink] = useState(() => DEFAULT_EMBED_VIDEO);
+            const [aboutData, setAboutData] = useState(() => defaultAboutData());
+            const [aiLinks, setAiLinks] = useState(() => fullAiLinks);
+
+            useEffect(() => { initThree(); }, []);
+
+            useEffect(() => {
+                const url = apiUrl('/api/config');
+                if (!url) {
+                    setBooting(false);
+                    return;
+                }
+                const absoluteUrl = url.startsWith('http')
+                    ? url
+                    : (typeof window !== 'undefined' ? `${window.location.origin}${url.startsWith('/') ? '' : '/'}${url}` : url);
+                let cancelled = false;
+                fetch(url)
+                    .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+                    .then((cfg) => {
+                        if (cancelled) return;
+                        setCloudOk(true);
+                        setLoadError(false);
+                        setFetchDebug({ tried: '', detail: '' });
+                        if (cfg.library != null) setLibrary(cfg.library);
+                        if (cfg.quizzes != null) setQuizzes(mapQuizData({ ...fullQuiz, ...cfg.quizzes }));
+                        if (cfg.leaderboards != null && typeof cfg.leaderboards === 'object') setLeaderboards(cfg.leaderboards);
+                        if (cfg.notifications != null && Array.isArray(cfg.notifications)) setNotifications(cfg.notifications);
+                        if (cfg.videoLink != null) setVideoLink(cfg.videoLink);
+                        if (cfg.aboutData != null && typeof cfg.aboutData === 'object') {
+                            setAboutData((prev) => ({ ...prev, ...cfg.aboutData, social: { ...prev.social, ...(cfg.aboutData.social || {}) } }));
+                        }
+                        if (cfg.aiLinks != null && Array.isArray(cfg.aiLinks)) setAiLinks(cfg.aiLinks);
+                        if (cfg.subjects != null && typeof cfg.subjects === 'object') {
+                            setSubjects((prev) => ({ ...prev, ...cfg.subjects, pharmacology: fullPharm, pathophysiology: fullPath }));
+                        }
+                        if (cfg.students != null && Array.isArray(cfg.students)) setStudents(cfg.students);
+                    })
+                    .catch((err) => {
+                        if (!cancelled) {
+                            setCloudOk(false);
+                            setLoadError(true);
+                            setFetchDebug({
+                                tried: absoluteUrl,
+                                detail: err && err.message ? err.message : 'Failed to fetch (server not running or wrong URL?)',
+                            });
+                        }
+                    })
+                    .finally(() => {
+                        if (!cancelled) setBooting(false);
+                    });
+                return () => { cancelled = true; };
+            }, []);
+
+            useEffect(() => {
+                if (!isAdmin || !adminKey) return;
+                const base = apiUrl('/api/admin/content');
+                if (!base) return;
+                const t = setTimeout(() => {
+                    fetch(base, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json', 'X-Admin-Key': adminKey },
+                        body: JSON.stringify({
+                            library, quizzes, leaderboards, notifications, videoLink, aboutData, aiLinks, subjects
+                        })
+                    }).catch(() => {});
+                }, 2000);
+                return () => clearTimeout(t);
+            }, [isAdmin, adminKey, library, quizzes, leaderboards, notifications, videoLink, aboutData, aiLinks, subjects]);
+
+            const pushLeaderboardCloud = useCallback(async (lid, board) => {
+                const u = apiUrl('/api/leaderboard/submit');
+                if (!u) return;
+                try {
+                    const r = await fetch(u, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ lid, leaderboard: board })
+                    });
+                    if (r.ok) {
+                        const j = await r.json();
+                        if (j.leaderboards) setLeaderboards(j.leaderboards);
+                    }
+                } catch (_) { /* offline */ }
+            }, [setLeaderboards]);
+
+            const activeStudent = user ? students.find(s => s.email === user.email) : null;
+            if (user && activeStudent && activeStudent.blocked) { setUser(null); writeSessionUser(null); alert("Account Blocked"); }
+
+            if (!SERVER_HOSTED) {
+                return (
+                    <div className="min-h-screen flex flex-col items-center justify-center p-8 text-center gap-6 bg-[#020617] text-white px-4">
+                        <div className="w-16 h-16 bg-primary rounded-2xl flex items-center justify-center font-black text-2xl text-white">M</div>
+                        <h1 className="text-2xl md:text-3xl font-black tracking-tight">Open this site from your server</h1>
+                        <p className="text-slate-400 max-w-lg text-sm leading-relaxed">
+                            Data is stored on the server only, not inside a saved HTML file. Run the backend on your computer or use your live hosting URL (for example <span className="text-white font-bold">http://localhost:3000</span> after <code className="text-primary">npm start</code>).
+                        </p>
+                    </div>
+                );
+            }
+
+            if (apiUrl('/api/config') && loadError && !booting) {
+                return (
+                    <div className="min-h-screen flex flex-col items-center justify-center p-8 text-center gap-8 bg-[#020617] text-white px-4 max-w-lg mx-auto">
+                        <div className="w-16 h-16 rounded-2xl bg-accent/20 border border-accent/40 flex items-center justify-center text-accent font-black text-xl">!</div>
+                        <div className="space-y-2">
+                            <h1 className="text-2xl font-black">Cannot reach the server</h1>
+                            <p className="text-slate-400 text-sm leading-relaxed">The page could not load classroom data from the API.</p>
+                        </div>
+                        {fetchDebug.tried && (
+                            <div className="w-full text-left glass rounded-2xl p-4 border border-white/10 space-y-2">
+                                <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">Request tried</p>
+                                <p className="text-xs font-mono text-primary break-all">{fetchDebug.tried}</p>
+                                {fetchDebug.detail && <p className="text-xs text-amber-200/90 pt-1">{fetchDebug.detail}</p>}
+                            </div>
+                        )}
+                        <ol className="w-full text-left text-sm text-slate-300 space-y-3 list-decimal list-inside glass rounded-2xl p-5 border border-white/10">
+                            <li>Open a terminal in your project folder (where <code className="text-primary">package.json</code> is).</li>
+                            <li>Run <code className="text-primary">npm install</code> once, then <code className="text-primary">npm start</code>.</li>
+                            <li>In the browser, open <strong className="text-white">http://localhost:3000</strong> (same address as the API). Or double‑click <code className="text-primary">start-local.bat</code> if you use it, then that URL.</li>
+                            <li>If you use Live Server or another port, set <code className="text-primary">API_BASE</code> in <code className="text-primary">MANIEDUHUB_CONFIG</code> in <code className="text-primary">index.html</code> to your API root, e.g. <code className="text-primary whitespace-nowrap">http://localhost:3000</code>.</li>
+                        </ol>
+                        <button type="button" onClick={() => window.location.reload()} className="px-10 py-4 bg-primary text-white rounded-2xl font-black text-sm shadow-xl hover:opacity-95">Retry</button>
+                    </div>
+                );
+            }
+
+            if (booting) {
+                return (
+                    <div className="min-h-screen flex flex-col items-center justify-center gap-6 animate-fade-in">
+                        <div className="w-16 h-16 bg-primary rounded-2xl flex items-center justify-center font-black text-2xl text-white shadow-2xl shadow-primary/30">M</div>
+                        <p className="text-slate-400 font-bold text-sm tracking-widest uppercase">Loading classroom…</p>
+                    </div>
+                );
+            }
+
+            if (!user && !isAdmin) return (
+                <AuthPage
+                    onAuth={async (u, isNew) => {
+                        setUser(u);
+                        writeSessionUser(u);
+                        const url = apiUrl('/api/config');
+                        if (url && isNew) {
+                            try {
+                                const r = await fetch(url);
+                                if (r.ok) {
+                                    const cfg = await r.json();
+                                    if (cfg.students != null && Array.isArray(cfg.students)) setStudents(cfg.students);
+                                }
+                            } catch (_) { /* ignore */ }
+                        }
+                    }}
+                    onAdmin={(key) => { setIsAdmin(true); setAdminKey(key); }}
+                    students={students}
+                />
+            );
+
+            return (
+                <div className="min-h-screen">
+                    {apiUrl('/api/config') != null && cloudOk && (
+                        <div className="fixed top-20 left-0 right-0 z-40 mx-auto max-w-lg px-4">
+                            <div className="glass border border-emerald-500/20 text-emerald-300/90 text-[10px] font-bold text-center py-2 rounded-2xl tracking-widest uppercase">Synced from server</div>
+                        </div>
+                    )}
+                    <nav className="fixed top-0 w-full z-50 glass border-b border-white/10 min-h-[5rem] flex items-center px-4 md:px-6 py-3">
+                        <div className="max-w-7xl mx-auto w-full flex justify-between items-center gap-4">
+                            <div className="flex items-center gap-3 cursor-pointer shrink-0" onClick={() => { setActiveTab('home'); setNavOpen(false); }}>
+                                <div className="w-10 h-10 bg-primary rounded-xl flex items-center justify-center font-black text-white">M</div>
+                                <h1 className="text-lg md:text-xl font-black text-white">MANIEDUHUB</h1>
+                            </div>
+                            {!isAdmin && (
+                                <>
+                                    <div className="hidden lg:flex items-center gap-2 flex-1 justify-center">
+                                        {['home', 'subject', 'library', 'quiz', 'notifications', 'lectures', 'ai'].map(t => (
+                                            <button key={t} onClick={() => setActiveTab(t)} className={`px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 capitalize ${activeTab === t ? 'bg-white/10 text-white' : 'text-slate-400 hover:text-white'}`}>
+                                                <Icon name={t} size={18} /> {t === 'ai' ? 'AI Hub' : t}
+                                            </button>
+                                        ))}
+                                    </div>
+                                    <button type="button" className="lg:hidden glass px-4 py-3 rounded-xl text-white font-black text-xs uppercase" onClick={() => setNavOpen((o) => !o)}>Menu</button>
+                                </>
+                            )}
+                            <div className="flex items-center gap-3 shrink-0">
+                                {isAdmin ? <div className="bg-accent/20 px-3 py-1.5 rounded-full border border-accent/30 text-[10px] md:text-xs font-bold text-accent flex items-center gap-2"><Icon name="lock" size={14}/> Admin</div> :
+                                 <div className="flex items-center gap-2 bg-white/5 px-3 py-1.5 rounded-full border border-white/10 text-xs md:text-sm font-bold text-white max-w-[10rem] md:max-w-none">
+                                    <img alt="" src={user.profileImage || user.img || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.email}`} className="w-8 h-8 rounded-full shrink-0" />
+                                    <span className="hidden md:inline truncate">{user.name.split(' ')[0]}</span>
+                                 </div>}
+                                <button type="button" onClick={() => { setUser(null); setIsAdmin(false); setAdminKey(''); writeSessionUser(null); }} className="text-slate-500 hover:text-white p-2" aria-label="Log out"><Icon name="logout" size={20}/></button>
+                            </div>
+                        </div>
+                    </nav>
+                    {!isAdmin && (
+                        <div className={`nav-drawer lg:hidden fixed top-0 right-0 bottom-0 w-[min(100%,20rem)] z-[60] glass border-l border-white/10 pt-24 px-6 flex flex-col gap-2 ${navOpen ? 'open' : ''}`}>
+                            {['home', 'subject', 'library', 'quiz', 'notifications', 'lectures', 'ai'].map(t => (
+                                <button key={t} onClick={() => { setActiveTab(t); setNavOpen(false); }} className={`px-4 py-4 rounded-xl text-left text-sm font-bold flex items-center gap-3 capitalize ${activeTab === t ? 'bg-primary text-white' : 'text-slate-300'}`}>
+                                    <Icon name={t} size={20} /> {t === 'ai' ? 'AI Hub' : t}
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                    {navOpen && !isAdmin && <button type="button" className="lg:hidden fixed inset-0 z-[55] bg-black/60" aria-label="Close menu" onClick={() => setNavOpen(false)} />}
+                    <main className="max-w-7xl mx-auto px-4 md:px-6 pt-28 md:pt-36 pb-20 animate-slide-up">
+                        {isAdmin ? <AdminPortal data={{ subjects, library, quizzes, students, notifications, videoLink, aboutData, aiLinks }} setters={{ setSubjects, setLibrary, setQuizzes, setStudents, setNotifications, setVideoLink, setAboutData, setAiLinks }} cloud={{ adminKey }} /> :
+                        <Fragment>
+                            {activeTab === 'home' && <HomeSection onNav={setActiveTab} about={aboutData} leaderboards={leaderboards} />}
+                            {activeTab === 'subject' && <SubjectHub data={subjects} />}
+                            {activeTab === 'library' && <LibrarySection data={library} />}
+                            {activeTab === 'quiz' && <QuizHub data={quizzes} user={user} leaderboards={leaderboards} setLeaderboards={setLeaderboards} pushLeaderboardCloud={pushLeaderboardCloud} />}
+                            {activeTab === 'notifications' && <NotificationSection data={notifications} />}
+                            {activeTab === 'lectures' && <VideosSection link={videoLink} />}
+                            {activeTab === 'ai' && <AIHub data={aiLinks} />}
+                        </Fragment>}
+                    </main>
+                </div>
+            );
+        };
+
+        const AuthPage = ({ onAuth, onAdmin, students }) => {
+            const [m, setM] = useState('choice');
+            const [f, setF] = useState({ name: '', email: '', pass: '', profileImage: '' });
+            const [err, setErr] = useState('');
+            const [isUploading, setIsUploading] = useState(false);
+            const handleImage = async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                setIsUploading(true);
+                try {
+                    const url = await uploadToCloudinary(file);
+                    setF({...f, profileImage: url});
+                } catch (e) {
+                    setErr("Photo upload failed: " + e.message);
+                } finally {
+                    setIsUploading(false);
+                }
+            };
+            const submit = async (e) => {
+                e.preventDefault();
+                setErr('');
+                const regUrl = apiUrl('/api/register');
+                const loginUrl = apiUrl('/api/login');
+
+                if (m === 'signup') {
+                    if (regUrl) {
+                        try {
+                            const res = await fetch(regUrl, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ name: f.name, email: f.email, pass: f.pass, profileImage: f.profileImage || '' })
+                            });
+                            const data = await res.json().catch(() => ({}));
+                            if (!res.ok) return setErr(data.error || 'Could not create account');
+                            onAuth(data.user, true);
+                        } catch (_) {
+                            setErr('Network error — check that the server is running.');
+                        }
+                        return;
+                    }
+                    return setErr('Open the site from your server URL to create an account.');
+                }
+                if (m === 'login') {
+                    if (loginUrl) {
+                        try {
+                            const res = await fetch(loginUrl, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ email: f.email, pass: f.pass })
+                            });
+                            const data = await res.json().catch(() => ({}));
+                            if (!res.ok) return setErr(data.error || 'Invalid credentials');
+                            onAuth(data.user, false);
+                        } catch (_) {
+                            setErr('Network error — cannot reach server.');
+                        }
+                        return;
+                    }
+                    return setErr('Open the site from your server URL to log in.');
+                }
+                if (m === 'admin') {
+                    if (f.pass !== ADMIN_PASS) return setErr('Wrong Admin Key');
+                    onAdmin(f.pass);
+                    return;
+                }
+                if (m === 'forgot') {
+                    const s = students.find(st => st.email === f.email);
+                    if (!s) return setErr('Email not found');
+                    return setErr('Password reset is handled on the server. Ask your administrator (they can use POST /api/admin/reset-password with the admin key).');
+                }
+            };
+
+            return (
+                <div className="min-h-screen flex items-center justify-center p-6">
+                    <div className="max-w-md w-full glass p-10 rounded-[3.5rem] space-y-8 animate-slide-up text-center border-white/5">
+                        <div className="space-y-2">
+                            <h1 className="text-5xl font-black text-white tracking-tighter">MANIEDU<span className="text-gradient">HUB</span></h1>
+                            <p className="text-slate-500 font-bold tracking-widest text-[10px] uppercase">Digital Learning Evolution</p>
+                            {apiUrl('/api/config') != null && <p className="text-[10px] font-bold text-emerald-400/90 uppercase tracking-widest pt-1">Server accounts — data stored on the host</p>}
+                        </div>
+                        
+                        {m === 'choice' ? (
+                            <div className="grid gap-4 pt-6">
+                                <button onClick={() => setM('login')} className="p-7 bg-primary text-white rounded-3xl font-black text-2xl shadow-2xl hover:scale-105 transition-all">Student Portal</button>
+                                <button onClick={() => setM('admin')} className="p-7 glass text-white rounded-3xl font-black text-2xl border-white/10 hover:bg-white/5 transition-all">Admin Access</button>
+                            </div>
+                        ) : (
+                            <form onSubmit={submit} className="space-y-5 text-left pt-4">
+                                {m === 'signup' && (
+                                    <div className="flex flex-col items-center mb-6">
+                                        <div className="w-20 h-20 rounded-full border-2 border-dashed border-white/20 flex items-center justify-center relative overflow-hidden bg-white/5">
+                                            {isUploading ? <div className="animate-spin text-primary"><Icon name="ai" size={30}/></div> : 
+                                             f.profileImage ? <img src={f.profileImage} className="w-full h-full object-cover" /> : <Icon name="user" className="text-slate-500" />}
+                                            <input type="file" onChange={handleImage} className="absolute inset-0 opacity-0 cursor-pointer" disabled={isUploading} />
+                                        </div>
+                                        <span className="text-[10px] font-bold mt-2 uppercase tracking-widest text-slate-500">
+                                            {isUploading ? <span className="text-primary animate-pulse">Uploading to Cloudinary…</span> :
+                                             f.profileImage ? <span className="text-green-500 flex items-center gap-1">✓ Photo on Cloudinary</span> :
+                                             'Upload profile photo'}
+                                        </span>
+                                        {SERVER_HOSTED && !CLOUDINARY_READY && (
+                                            <p className="text-[10px] text-amber-200/95 font-bold text-center leading-relaxed mt-3 px-1">
+                                                Add <code className="text-white/90">CLOUDINARY_NAME</code> and <code className="text-white/90">CLOUDINARY_PRESET</code> in <code className="text-white/90">index.html</code> (see comment in page source).{' '}
+                                                <a href="https://console.cloudinary.com" target="_blank" rel="noreferrer" className="text-primary underline">Open Cloudinary</a>
+                                            </p>
+                                        )}
+                                        <input type="text" placeholder="Full Name" className="w-full bg-white/5 p-4 rounded-2xl text-white outline-none border border-white/5 mt-4" onChange={e => setF({...f, name: e.target.value})} required />
+                                    </div>
+                                )}
+                                
+                                <Fragment>
+                                    <input type="email" placeholder="Email Address" className="w-full bg-white/5 p-4 rounded-2xl text-white outline-none border border-white/5" value={f.email} onChange={e => setF({...f, email: e.target.value})} required />
+                                    {m !== 'forgot' && <input type="password" placeholder="Password / Admin Key" className="w-full bg-white/5 p-4 rounded-2xl text-white outline-none border border-white/5" onChange={e => setF({...f, pass: e.target.value})} required />}
+                                </Fragment>
+
+                                {err && <p className={`text-center font-bold text-xs py-3 rounded-xl border ${err.includes('administrator') ? 'text-sky-200 bg-sky-500/10 border-sky-500/30' : err.includes('Cloudinary') ? 'text-amber-100 bg-amber-500/15 border-amber-400/30' : 'text-accent bg-accent/10 border-accent/20'}`}>{err}</p>}
+                                
+                                <button disabled={isUploading} className={`w-full py-5 ${isUploading ? 'bg-slate-700' : 'bg-primary'} text-white rounded-2xl font-black text-xl shadow-xl hover:scale-[1.02] transition-transform`}>
+                                    {isUploading ? 'Please Wait...' : m === 'login' ? 'Enter Classroom' : m === 'signup' ? 'Create Account' : m === 'forgot' ? 'Request help' : 'Login Admin'}
+                                </button>
+                                
+                                <div className="flex flex-col gap-4 text-[11px] font-black uppercase tracking-widest text-slate-500 pt-4">
+                                    <div className="flex justify-between w-full">
+                                        <button type="button" onClick={() => { setM(m === 'login' ? 'signup' : 'login'); setErr(''); }}>{m === 'login' ? 'New Account? Signup' : 'Existing Account? Login'}</button>
+                                        <button type="button" onClick={() => { setM('choice'); setErr(''); }}>Back</button>
+                                    </div>
+                                    {m === 'login' && <button type="button" onClick={() => { setM('forgot'); setErr(''); }} className="text-primary text-center hover:underline">Forgot Password?</button>}
+                                </div>
+                            </form>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        const HomeSection = ({ onNav, about, leaderboards }) => {
+            const allScores = Object.values(leaderboards).flat().sort((a,b) => b.score - a.score).slice(0, 5);
+            return (
+                <div className="space-y-24">
+                    <div className="glass p-20 rounded-[4rem] text-center space-y-10 relative overflow-hidden group border-white/5">
+                        <div className="absolute inset-0 bg-gradient-to-br from-primary/10 via-transparent to-accent/10"></div>
+                        <div className="relative z-10 space-y-10"><h2 className="text-7xl md:text-9xl font-black text-white tracking-tighter drop-shadow-2xl">MANIEDU<span className="text-gradient">HUB</span></h2><p className="text-3xl text-slate-400 italic font-light">"Ignite Your Curiosity, Master the Science of Healing."</p><button onClick={() => onNav('subject')} className="px-16 py-6 bg-primary text-white rounded-full font-black text-2xl shadow-3xl">Start Learning</button></div>
+                    </div>
+                    <div className="grid md:grid-cols-2 gap-12">
+                        <div className="glass rounded-[3.5rem] p-12 space-y-10 border-white/5"><div className="flex flex-col md:flex-row items-center gap-10"><img src={about.imageUrl || "photo/IMG_4521.JPG"} className="w-56 h-56 object-cover rounded-[2.5rem] border-2 border-white/20 shadow-2xl rotate-3" /><div><h3 className="text-5xl font-black text-white">{about.name}</h3><p className="text-primary font-bold text-lg mt-2">{about.title}</p></div></div><p className="text-xl text-slate-300 italic leading-relaxed">"{about.description}"</p></div>
+                        <div className="glass rounded-[3.5rem] p-12 space-y-10 border-accent/20"><h3 className="text-3xl font-black text-white">Connect with Me</h3><div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {[
+                                { n: 'Instagram', i: 'instagram', l: `https://instagram.com/${about.social.instagram.replace('@','')}`, v: about.social.instagram },
+                                { n: 'LinkedIn', i: 'linkedin', l: `https://linkedin.com/in/${about.social.linkedin}`, v: about.social.linkedin },
+                                { n: 'Phone', i: 'phone', l: `tel:${about.social.phone}`, v: about.social.phone },
+                                { n: 'Email', i: 'email', l: `mailto:${about.social.email}`, v: about.social.email },
+                                { n: 'YouTube', i: 'youtube', l: `https://youtube.com/@${about.social.youtube}`, v: about.social.youtube }
+                            ].map(a => (
+                                <a key={a.n} href={a.l} target="_blank" className="flex items-center gap-5 p-5 glass-card rounded-3xl group border-white/5">
+                                    <div className="w-12 h-12 rounded-2xl bg-white/5 flex items-center justify-center text-primary group-hover:scale-110 transition-transform"><Icon name={a.i} size={24}/></div>
+                                    <div><p className="text-[10px] uppercase font-black text-slate-500 tracking-widest">{a.n}</p><p className="text-sm font-bold text-white mt-1">{a.v}</p></div>
+                                </a>
+                            ))}
+                        </div></div>
+                    </div>
+                    {allScores.length > 0 && (
+                        <div className="glass p-12 rounded-[4rem] border-white/5">
+                            <div className="flex justify-between items-center mb-10"><h3 className="text-4xl font-black text-white tracking-tight">Global Leaderboard</h3><Icon name="quiz" size={32} className="text-primary"/></div>
+                            <div className="grid md:grid-cols-5 gap-6">
+                                {allScores.map((s, i) => (
+                                    <div key={i} className="glass-card p-8 rounded-[2.5rem] text-center space-y-4 border-white/5">
+                                        <div className="relative inline-block"><img src={s.img} className="w-20 h-20 rounded-[1.5rem] object-cover mx-auto border-2 border-primary/20"/><div className="absolute -top-3 -right-3 w-8 h-8 bg-primary rounded-full flex items-center justify-center text-xs font-black text-white shadow-lg">{i+1}</div></div>
+                                        <h4 className="font-black text-white truncate px-2">{s.name}</h4>
+                                        <p className="text-2xl font-black text-gradient">{s.score}%</p>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const SubjectHub = ({ data }) => {
+            const [sel, setSel] = useState('pharmacology');
+            const cats = Object.keys(data);
+
+            return (
+                <div className="space-y-12 animate-slide-up">
+                    <div className="flex justify-center gap-4 overflow-x-auto no-scrollbar pb-2">
+                        {cats.map(s => <button key={s} onClick={() => setSel(s)} className={`px-10 py-4 rounded-3xl font-black capitalize transition-all whitespace-nowrap ${sel === s ? 'bg-primary text-white shadow-2xl' : 'glass text-slate-500'}`}>{s}</button>)}
+                    </div>
+                    <div className="max-w-5xl mx-auto space-y-6">
+                        {data[sel].map((u, i) => <div key={i} className="glass rounded-[2.5rem] overflow-hidden border-white/5"><Accordion unit={u} /></div>)}
+                    </div>
+                </div>
+            );
+        };
+
+        const Accordion = ({ unit }) => {
+            const [open, setOpen] = useState(false);
+            return (
+                <Fragment>
+                    <button onClick={() => setOpen(!open)} className="w-full p-10 flex justify-between items-center group"><span className="font-black text-white text-2xl tracking-tight">{unit.title}</span><Icon name="chevron" size={28} className={`text-slate-500 transition-all ${open ? 'rotate-180 text-primary' : ''}`}/></button>
+                    {open && <div className="px-10 pb-10 space-y-4 animate-slide-up">{unit.links.map((l, i) => <a key={i} href={l.url} target="_blank" className="flex items-center gap-5 p-6 bg-black/40 rounded-3xl border border-white/5 hover:border-primary/20 transition-all group"><div className="w-12 h-12 rounded-2xl bg-white/5 flex items-center justify-center text-primary group-hover:scale-110 transition-transform"><Icon name="link" size={20}/></div><span className="text-slate-300 font-bold text-lg">{l.text}</span></a>)}</div>}
+                </Fragment>
+            );
+        };
+
+        const LibrarySection = ({ data }) => {
+            const [sel, setSel] = useState('All'); 
+            const cats = ['All', ...Object.keys(data)]; 
+            
+            return (
+                <div className="space-y-20 animate-slide-up">
+                    <div className="text-center space-y-10">
+                        <h2 className="text-8xl font-black text-white tracking-tighter">Digital <span className="text-gradient">Library</span></h2>
+                        <div className="flex justify-center gap-3 overflow-x-auto no-scrollbar pb-4 max-w-3xl mx-auto">
+                            {cats.map(c => <button key={c} onClick={() => setSel(c)} className={`px-10 py-4 rounded-2xl text-sm font-black transition-all border whitespace-nowrap ${sel === c ? 'bg-primary text-white border-primary shadow-2xl shadow-primary/20' : 'glass text-slate-500 border-white/5 hover:border-white/20 hover:text-white'}`}>{c}</button>)}
+                        </div>
+                    </div>
+
+                    <div className="space-y-24">
+                        {(sel === 'All' ? Object.keys(data) : [sel]).map(cat => (
+                            <div key={cat} className="space-y-12">
+                                <div className="flex items-center gap-8">
+                                    <h3 className="text-4xl font-black text-white whitespace-nowrap">{cat} Collection</h3>
+                                    <div className="w-full h-px bg-gradient-to-r from-white/10 to-transparent"></div>
+                                </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-10">
+                                    {(data[cat] || []).map((b, i) => (
+                                        <div key={i} className="glass rounded-[3.5rem] p-12 border-l-[16px] hover:scale-105 transition-all shadow-2xl group relative overflow-hidden" style={{ borderColor: b.color || '#6366f1' }}>
+                                            <div className="absolute top-0 right-0 p-6 opacity-10 group-hover:opacity-30 transition-opacity"><Icon name="library" size={60}/></div>
+                                            <div className="relative z-10 space-y-6">
+                                                <h4 className="text-3xl font-black text-white leading-tight min-h-[6rem] line-clamp-2">{b.title}</h4>
+                                                <div className="pt-6 border-t border-white/5">
+                                                    <p className="text-[10px] text-primary font-black uppercase tracking-[0.2em] mb-2">Author</p>
+                                                    <p className="text-lg font-bold text-slate-400">{b.author}</p>
+                                                </div>
+                                                <button onClick={() => window.open(b.url, '_blank')} className="w-full py-4 bg-white/5 rounded-2xl text-xs font-black uppercase tracking-widest text-white border border-white/10 group-hover:bg-primary group-hover:border-primary transition-all">Read Book</button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        const QuizHub = ({ data, user, leaderboards, setLeaderboards, pushLeaderboardCloud }) => {
+            const [sel, setSel] = useState({ s: null, u: null, t: null }); 
+            const [state, setState] = useState('nav'); 
+            const [cur, setCur] = useState(0); 
+            const [sc, setSc] = useState(0); 
+            const qListRaw = (sel.s && sel.u && sel.t) ? (data[sel.s]?.[sel.u]?.[sel.t] || []) : [];
+            const qList = qListRaw.map(normalizeQuizQuestion);
+
+            const handleAns = idx => {
+                if (!qList[cur]) return;
+                const ns = idx === qList[cur].c ? sc + 1 : sc;
+                if (cur < qList.length - 1) { setCur(cur+1); setSc(ns); }
+                else {
+                    const final = Math.round((ns/qList.length)*100); 
+                    setSc(final); 
+                    setState('res'); 
+                    const lid = `${sel.s}-${sel.u}-${sel.t}`;
+                    const avatar = user.profileImage || user.img || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(user.email || '')}`;
+                    const lb = [...(leaderboards[lid] || []), { name: user.name, score: final, img: avatar, date: new Date().toLocaleDateString() }]
+                        .sort((a,b) => b.score - a.score)
+                        .slice(0, 10);
+                    setLeaderboards({...leaderboards, [lid]: lb});
+                    if (typeof pushLeaderboardCloud === 'function') pushLeaderboardCloud(lid, lb);
+                }
+            };
+
+            if (state === 'nav') return (
+                <div className="max-w-6xl mx-auto space-y-16 animate-slide-up">
+                    <div className="text-center space-y-4">
+                        <h2 className="text-8xl font-black text-white tracking-tighter">Quiz <span className="text-gradient">Arena</span></h2>
+                        <p className="text-slate-500 font-bold uppercase tracking-[0.4em] text-sm">Test Your Expertise</p>
+                    </div>
+
+                    {!sel.s ? (
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-10">
+                            {Object.keys(data).map(s => (
+                                <button key={s} onClick={() => setSel({...sel, s})} className="glass p-16 rounded-[4rem] text-center space-y-6 hover:scale-105 transition-all border-white/5 group">
+                                    <div className="w-20 h-20 bg-primary/10 rounded-[2rem] mx-auto flex items-center justify-center text-primary group-hover:bg-primary group-hover:text-white transition-all"><Icon name="quiz" size={40}/></div>
+                                    <h3 className="text-4xl font-black text-white uppercase tracking-tight">{s}</h3>
+                                </button>
+                            ))}
+                        </div>
+                    ) : !sel.u ? (
+                        <div className="space-y-10">
+                            <button onClick={() => setSel({...sel, s: null})} className="flex items-center gap-2 text-primary font-black uppercase text-xs tracking-widest px-8 py-3 glass rounded-full"><Icon name="chevron" size={16} className="rotate-90"/> Back to Subjects</button>
+                            <div className="grid gap-6">
+                                {Object.keys(data[sel.s]).map(u => (
+                                    <button key={u} onClick={() => setSel({...sel, u})} className="glass p-10 rounded-[3rem] text-left text-4xl font-black text-white flex justify-between items-center group border-white/5">
+                                        <span className="pl-6">{u}</span>
+                                        <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center group-hover:bg-primary transition-all"><Icon name="chevron" size={32} className="-rotate-90"/></div>
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="space-y-10">
+                            <button onClick={() => setSel({...sel, u: null})} className="flex items-center gap-2 text-primary font-black uppercase text-xs tracking-widest px-8 py-3 glass rounded-full"><Icon name="chevron" size={16} className="rotate-90"/> Back to Units</button>
+                            <div className="grid md:grid-cols-2 gap-10">
+                                {Object.keys(data[sel.s][sel.u]).map(t => {
+                                    const lid = `${sel.s}-${sel.u}-${t}`;
+                                    const top = leaderboards[lid] || [];
+                                    return (
+                                        <div key={t} className="glass p-12 rounded-[4rem] space-y-10 border-white/5 shadow-3xl">
+                                            <h4 className="text-4xl font-black text-white leading-none tracking-tighter">{t}</h4>
+                                            <button onClick={() => { setSel({...sel, t}); setState('play'); setCur(0); setSc(0); }} className="w-full py-6 bg-primary text-white rounded-[2.5rem] font-black text-2xl shadow-3xl hover:scale-105 transition-transform">Start Challenge</button>
+                                            
+                                            <div className="space-y-6 pt-10 border-t border-white/5">
+                                                <div className="flex justify-between items-center"><span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Hall of Fame</span><Icon name="lectures" size={16} className="text-primary"/></div>
+                                                <div className="space-y-3">
+                                                    {top.slice(0,3).map((e, i) => (
+                                                        <div key={i} className="flex justify-between items-center bg-white/5 p-5 rounded-3xl border border-white/5">
+                                                            <div className="flex items-center gap-5">
+                                                                <div className="relative"><img src={e.img} className="w-12 h-12 rounded-2xl object-cover shadow-lg"/><div className="absolute -top-2 -right-2 w-6 h-6 bg-primary rounded-full flex items-center justify-center text-[10px] font-black text-white shadow-lg">{i+1}</div></div>
+                                                                <span className="font-black text-white text-xl">{e.name}</span>
+                                                            </div>
+                                                            <span className="text-2xl font-black text-gradient">{e.score}%</span>
+                                                        </div>
+                                                    ))}
+                                                    {top.length === 0 && <p className="text-center text-slate-500 py-6 font-bold text-sm italic">Be the first to top the charts!</p>}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+
+            if (state === 'play') return (
+                <div className="max-w-4xl mx-auto glass p-16 rounded-[5rem] space-y-12 animate-slide-up border-white/5 shadow-3xl">
+                    <div className="flex justify-between items-center">
+                        <span className="px-6 py-2 bg-primary/10 text-primary rounded-full text-[10px] font-black uppercase tracking-widest border border-primary/20">{sel.t}</span>
+                        <span className="text-3xl font-black text-white opacity-20">Q{cur+1}/{qList.length}</span>
+                    </div>
+                    <div className="space-y-4">
+                        <div className="w-full h-2 bg-white/5 rounded-full overflow-hidden"><div className="h-full bg-primary transition-all duration-500" style={{ width: `${((cur+1)/qList.length)*100}%` }}></div></div>
+                        <h3 className="text-5xl font-black text-white leading-tight tracking-tight">{qList[cur].q}</h3>
+                    </div>
+                    <div className="grid gap-5">
+                        {qList[cur].o.map((o, i) => (
+                            <button key={i} onClick={() => handleAns(i)} className="w-full p-8 text-left glass-card rounded-[2.5rem] font-black text-2xl border border-white/5 hover:bg-primary group transition-all">
+                                <span className="opacity-20 mr-4 group-hover:opacity-100 transition-opacity">0{i+1}.</span>
+                                {o}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            );
+
+            return (
+                <div className="max-w-2xl mx-auto glass p-20 rounded-[5rem] text-center space-y-12 animate-slide-up border-white/5 shadow-3xl relative overflow-hidden">
+                    <div className="absolute top-0 inset-x-0 h-2 bg-gradient-to-r from-primary via-accent to-primary"></div>
+                    <div className="relative z-10 space-y-10">
+                        <div className="w-40 h-40 bg-primary/10 rounded-[3rem] mx-auto flex items-center justify-center text-primary animate-bounce shadow-2xl shadow-primary/20"><Icon name="quiz" size={80} /></div>
+                        <div className="space-y-2">
+                            <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.4em]">Battle Results</h3>
+                            <p className="text-9xl font-black text-white tracking-tighter">{sc}<span className="text-3xl text-primary opacity-50">%</span></p>
+                        </div>
+                        <p className="text-xl text-slate-400 font-medium px-10 leading-relaxed">{sc >= 80 ? "Phenomenal! You've mastered this topic with surgical precision." : sc >= 50 ? "Solid effort! A bit more review and you'll be at the top." : "Keep grinding. Excellence is built through persistence."}</p>
+                        <button onClick={() => setState('nav')} className="w-full py-8 bg-primary text-white rounded-[2.5rem] font-black text-3xl shadow-3xl hover:scale-105 transition-transform">Return to Hub</button>
+                    </div>
+                </div>
+            );
+        };
+
+        const NotificationSection = ({ data }) => (
+            <div className="max-w-4xl mx-auto space-y-8 animate-slide-up"><h2 className="text-6xl font-black text-white text-center mb-12">Campus Feed</h2>{data.map(n => (<div key={n.id} className="glass p-10 rounded-[3rem] border-l-8 border-primary shadow-2xl"><div className="flex justify-between items-center mb-4"><h4 className="text-3xl font-black text-white">{n.title}</h4><span className="text-[10px] text-slate-500 font-black">{n.date}</span></div><p className="text-slate-400 mb-8 text-lg font-light leading-relaxed">{n.message}</p>{n.link && <a href={n.link} target="_blank" className="inline-block px-8 py-3 bg-primary/20 text-primary font-black uppercase text-xs rounded-full border border-primary/30">Open Link</a>}</div>))}</div>
+        );
+
+        const VideosSection = ({ link }) => <div className="max-w-6xl mx-auto aspect-video glass rounded-[4rem] overflow-hidden shadow-2xl"><iframe width="100%" height="100%" src={link} frameBorder="0" allowFullScreen></iframe></div>;
+        const AIHub = ({ data }) => {
+            const cats = [...new Set(data.map(a => a.category))];
+            return (
+                <div className="space-y-20 animate-slide-up">
+                    <div className="text-center space-y-6">
+                        <h2 className="text-7xl font-black text-white">AI Learning Hub</h2>
+                        <p className="text-xl text-slate-500 font-bold uppercase tracking-[0.3em]">Next-Gen Education Tools</p>
+                    </div>
+                    {cats.map(cat => (
+                        <div key={cat} className="space-y-10">
+                            <h3 className="text-4xl font-black text-white flex items-center gap-6">
+                                <span className="w-16 h-1.5 bg-primary rounded-full"></span>
+                                {cat} Tools
+                            </h3>
+                            <div className="grid md:grid-cols-3 gap-10">
+                                {data.filter(a => a.category === cat).map(a => (
+                                    <div key={a.name} className="glass p-16 rounded-[4rem] text-center space-y-8 hover:scale-105 transition-all shadow-3xl group border-white/5">
+                                        <div className="w-24 h-24 bg-primary/10 rounded-[2.5rem] mx-auto flex items-center justify-center text-primary group-hover:rotate-12 transition-transform"><Icon name="ai" size={48}/></div>
+                                        <div>
+                                            <h3 className="text-3xl font-black text-white mb-2">{a.name}</h3>
+                                            <p className="text-slate-500 text-sm font-medium leading-relaxed">{a.description}</p>
+                                        </div>
+                                        <a href={a.url} target="_blank" className="block w-full py-5 bg-white/5 text-white rounded-3xl font-black border border-white/10 hover:bg-primary hover:border-primary transition-all shadow-xl">Launch Tool</a>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            );
+        };
+
+        const AdminPortal = ({ data, setters, cloud }) => {
+            const adminKey = cloud && cloud.adminKey ? cloud.adminKey : '';
+            const [mode, setMode] = useState('about');
+            const [ed, setEd] = useState({ u: null, l: null, target: null });
+            const [f, setF] = useState({});
+            const [isUploading, setIsUploading] = useState(false);
+
+            const handleAdminImage = async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                setIsUploading(true);
+                try {
+                    const url = await uploadToCloudinary(file);
+                    setF({...data.aboutData, ...f, imageUrl: url});
+                } catch (err) {
+                    alert("Upload failed: " + err.message);
+                } finally {
+                    setIsUploading(false);
+                }
+            };
+
+            const save = () => {
+                if (ed.target === 'subject-edit') {
+                    const copy = { ...data.subjects };
+                    if (ed.u === -1) copy[f.newName] = [];
+                    else {
+                        const oldName = Object.keys(copy)[ed.u];
+                        if (oldName !== f.newName) { copy[f.newName] = copy[oldName]; delete copy[oldName]; }
+                    }
+                    setters.setSubjects(copy);
+                } else if (ed.target === 'unit' || ed.target === 'note') {
+                    const copy = { ...data.subjects };
+                    const list = copy[ed.type];
+                    if (ed.target === 'unit') {
+                        if (ed.u === -1) list.push({ title: f.title, links: [] });
+                        else list[ed.u].title = f.title;
+                    } else {
+                        if (ed.l === -1) list[ed.u].links.push({ text: f.text, url: f.url });
+                        else list[ed.u].links[ed.l] = { text: f.text, url: f.url };
+                    }
+                    setters.setSubjects(copy);
+                } else if (ed.target === 'quiz-json') {
+                    try {
+                        const parsed = JSON.parse(f.json);
+                        const copy = { ...data.quizzes };
+                        if (!copy[f.s]) copy[f.s] = {};
+                        if (!copy[f.s][f.u]) copy[f.s][f.u] = {};
+                        copy[f.s][f.u][f.t] = parsed;
+                        setters.setQuizzes(copy);
+                    } catch(e) { alert("Invalid JSON format"); return; }
+                } else if (ed.target === 'notif') {
+                    if (ed.u === -1) setters.setNotifications([...data.notifications, { ...f, id: Date.now(), date: new Date().toLocaleDateString() }]);
+                    else { const copy = [...data.notifications]; copy[ed.u] = { ...f }; setters.setNotifications(copy); }
+                } else if (ed.target === 'library') {
+                    const copy = { ...data.library };
+                    if (ed.u === -1) { if(!copy[f.cat]) copy[f.cat] = []; copy[f.cat].push({ title: f.title, author: f.author, color: '#6366f1', url: f.url }); }
+                    else { copy[f.cat][ed.u] = { title: f.title, author: f.author, color: f.color, url: f.url }; }
+                    setters.setLibrary(copy);
+                } else if (ed.target === 'ai') {
+                    if (ed.u === -1) setters.setAiLinks([...data.aiLinks, { ...f }]);
+                    else { const copy = [...data.aiLinks]; copy[ed.u] = { ...f }; setters.setAiLinks(copy); }
+                } else if (mode === 'about') {
+                    setters.setAboutData({ ...data.aboutData, ...f });
+                } else if (mode === 'lecture') {
+                    setters.setVideoLink(f.link || data.videoLink);
+                }
+                setEd({ u: null, target: null }); setF({});
+            };
+
+            const del = (type, idx, lidx = null, nidx = null) => {
+                if (type === 'subject') { const copy = { ...data.subjects }; delete copy[idx]; setters.setSubjects(copy); }
+                else if (type === 'unit') { const copy = { ...data.subjects }; copy[idx].splice(lidx, 1); setters.setSubjects(copy); }
+                else if (type === 'note') { const copy = { ...data.subjects }; copy[idx][lidx].links.splice(nidx, 1); setters.setSubjects(copy); }
+                else if (type === 'notifs') setters.setNotifications(data.notifications.filter((_, i) => i !== idx));
+                else if (type === 'library') { const copy = {...data.library}; copy[f.cat].splice(idx,1); setters.setLibrary(copy); }
+                else if (type === 'ai') setters.setAiLinks(data.aiLinks.filter((_, i) => i !== idx));
+                else if (type === 'student') setters.setStudents(data.students.filter((_, i) => i !== idx));
+            };
+
+            return (
+                <div className="space-y-12">
+                    <div className="flex gap-4 overflow-x-auto no-scrollbar pb-4">
+                        {['about', 'students', 'subjects', 'library', 'ai', 'notifs', 'quizzes', 'lecture'].map(m => <button key={m} onClick={() => setMode(m)} className={`px-10 py-4 rounded-3xl font-black capitalize transition-all whitespace-nowrap ${mode === m ? 'bg-primary text-white shadow-2xl' : 'glass text-slate-500 hover:text-white'}`}>{m}</button>)}
+                    </div>
+
+                    {mode === 'about' && (
+                        <div className="glass p-10 rounded-[3.5rem] space-y-8 max-w-4xl mx-auto border-white/5">
+                            <h3 className="text-3xl font-black text-white">About Profile Management</h3>
+                            <div className="grid gap-6 text-left">
+                                <div className="grid md:grid-cols-2 gap-6">
+                                    <div className="space-y-2"><label className="text-[10px] font-black text-slate-500 ml-4 uppercase tracking-widest">Full Name</label><input className="w-full bg-white/5 p-5 rounded-2xl text-white outline-none border border-white/5" value={f.name || data.aboutData.name} onChange={e => setF({...data.aboutData, ...f, name: e.target.value})} /></div>
+                                    <div className="space-y-2"><label className="text-[10px] font-black text-slate-500 ml-4 uppercase tracking-widest">Job Title</label><input className="w-full bg-white/5 p-5 rounded-2xl text-white outline-none border border-white/5" value={f.title || data.aboutData.title} onChange={e => setF({...data.aboutData, ...f, title: e.target.value})} /></div>
+                                </div>
+                                <div className="space-y-2"><label className="text-[10px] font-black text-slate-500 ml-4 uppercase tracking-widest">Description</label><textarea className="w-full bg-white/5 p-5 rounded-2xl text-white outline-none border border-white/5 h-32" value={f.description || data.aboutData.description} onChange={e => setF({...data.aboutData, ...f, description: e.target.value})} /></div>
+                                <div className="grid md:grid-cols-2 gap-6 pt-4 border-t border-white/5">
+                                    <div className="space-y-2">
+                                        <label className="text-[10px] font-black text-primary ml-4 uppercase tracking-widest flex items-center gap-2"><Icon name="instagram" size={12}/> Instagram Username</label>
+                                        <input className="w-full bg-white/5 p-4 rounded-xl text-white outline-none border border-white/5 focus:border-primary/50" placeholder="@username" value={f.social?.instagram || data.aboutData.social.instagram} onChange={e => setF({...data.aboutData, ...f, social: {...data.aboutData.social, ...f.social, instagram: e.target.value}})} />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <label className="text-[10px] font-black text-primary ml-4 uppercase tracking-widest flex items-center gap-2"><Icon name="linkedin" size={12}/> LinkedIn Profile ID</label>
+                                        <input className="w-full bg-white/5 p-4 rounded-xl text-white outline-none border border-white/5 focus:border-primary/50" placeholder="username" value={f.social?.linkedin || data.aboutData.social.linkedin} onChange={e => setF({...data.aboutData, ...f, social: {...data.aboutData.social, ...f.social, linkedin: e.target.value}})} />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <label className="text-[10px] font-black text-primary ml-4 uppercase tracking-widest flex items-center gap-2"><Icon name="youtube" size={12}/> YouTube Channel ID</label>
+                                        <input className="w-full bg-white/5 p-4 rounded-xl text-white outline-none border border-white/5 focus:border-primary/50" placeholder="@ChannelHandle" value={f.social?.youtube || data.aboutData.social.youtube} onChange={e => setF({...data.aboutData, ...f, social: {...data.aboutData.social, ...f.social, youtube: e.target.value}})} />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <label className="text-[10px] font-black text-primary ml-4 uppercase tracking-widest flex items-center gap-2"><Icon name="phone" size={12}/> Contact Phone</label>
+                                        <input className="w-full bg-white/5 p-4 rounded-xl text-white outline-none border border-white/5 focus:border-primary/50" placeholder="+91 ..." value={f.social?.phone || data.aboutData.social.phone} onChange={e => setF({...data.aboutData, ...f, social: {...data.aboutData.social, ...f.social, phone: e.target.value}})} />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <label className="text-[10px] font-black text-primary ml-4 uppercase tracking-widest flex items-center gap-2"><Icon name="email" size={12}/> Business Email</label>
+                                        <input className="w-full bg-white/5 p-4 rounded-xl text-white outline-none border border-white/5 focus:border-primary/50" placeholder="mani@example.com" value={f.social?.email || data.aboutData.social.email} onChange={e => setF({...data.aboutData, ...f, social: {...data.aboutData.social, ...f.social, email: e.target.value}})} />
+                                    </div>
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="text-[10px] font-black text-slate-500 ml-4 uppercase tracking-widest">Profile Image (Upload to Change)</label>
+                                    <div className="flex gap-6 items-center bg-white/5 p-6 rounded-3xl border border-white/5">
+                                        <div className="relative w-24 h-24">
+                                            {isUploading ? <div className="absolute inset-0 flex items-center justify-center bg-black/50 rounded-3xl animate-spin text-primary"><Icon name="ai" size={24}/></div> : null}
+                                            <img src={f.imageUrl || data.aboutData.imageUrl} className="w-full h-full rounded-3xl object-cover border-2 border-primary/20 shadow-xl" />
+                                        </div>
+                                        <div className="flex flex-col gap-2">
+                                            <input type="file" className="text-xs text-slate-500 font-bold file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-black file:bg-primary/20 file:text-primary hover:file:bg-primary/30" onChange={handleAdminImage} disabled={isUploading} />
+                                            {isUploading ? <span className="text-[10px] font-black text-primary animate-pulse uppercase tracking-widest">Uploading to Cloudinary...</span> :
+                                             f.imageUrl ? <span className="text-[10px] font-black text-green-500 uppercase tracking-widest">✓ Image Uploaded Successfully</span> : null}
+                                        </div>
+                                    </div>
+                                </div>
+                                <button onClick={save} className="py-6 bg-primary text-white rounded-3xl font-black text-xl shadow-2xl hover:scale-[1.02] transition-transform">Save All Profile Settings</button>
+                            </div>
+                        </div>
+                    )}
+
+                    {mode === 'subjects' && (
+                        <div className="space-y-12">
+                            <div className="flex justify-between items-center"><h3 className="text-3xl font-black text-white">Subject Database</h3><button onClick={() => { setEd({ target: 'subject-edit', u: -1 }); setF({ newName: '' }); }} className="px-8 py-3 bg-primary text-white rounded-2xl font-black text-xs shadow-xl">+ ADD NEW SUBJECT</button></div>
+                            <div className="grid lg:grid-cols-2 gap-10">
+                                {Object.keys(data.subjects).map((t, ti) => (
+                                    <div key={t} className="glass p-10 rounded-[3.5rem] space-y-8 border-white/5">
+                                        <div className="flex justify-between items-center">
+                                            <h3 className="text-2xl font-black text-white uppercase tracking-widest">{t}</h3>
+                                            <div className="flex gap-3"><button onClick={() => { setEd({ target: 'subject-edit', u: ti }); setF({ newName: t }); }}><Icon name="edit" size={18}/></button><button onClick={() => del('subject', t)} className="text-accent"><Icon name="trash" size={18}/></button></div>
+                                        </div>
+                                        <div className="space-y-6">
+                                            {data.subjects[t].map((u, i) => (
+                                                <div key={i} className="p-8 bg-white/5 rounded-[2.5rem] border border-white/5 space-y-6">
+                                                    <div className="flex justify-between items-center"><span className="font-black text-white text-xl">{u.title}</span><div className="flex gap-2"><button onClick={() => { setEd({ target: 'unit', type: t, u: i }); setF({ title: u.title }); }}><Icon name="edit" size={18}/></button><button onClick={() => del('unit', t, i)} className="text-slate-500"><Icon name="trash" size={18}/></button></div></div>
+                                                    <div className="space-y-2">{u.links.map((l, li) => <div key={li} className="flex justify-between bg-black/40 p-3 rounded-2xl text-[10px] font-bold"><span className="truncate w-3/4">{l.text}</span><div className="flex gap-2"><button onClick={() => { setEd({ target: 'note', type: t, u: i, l: li }); setF({ text: l.text, url: l.url }); }}><Icon name="edit" size={14}/></button><button className="text-accent" onClick={() => del('note', t, i, li)}><Icon name="trash" size={14}/></button></div></div>)}</div>
+                                                    <button onClick={() => { setEd({ target: 'note', type: t, u: i, l: -1 }); setF({ text: '', url: '' }); }} className="w-full py-3 text-[10px] font-black text-primary uppercase border border-dashed border-primary/20 rounded-2xl hover:bg-primary/5 transition-all">+ Add File Link</button>
+                                                </div>
+                                            ))}
+                                            <button onClick={() => { setEd({ target: 'unit', type: t, u: -1 }); setF({ title: '' }); }} className="w-full py-4 bg-white/5 rounded-[2rem] text-xs font-black text-slate-400 border border-dashed border-white/10 hover:bg-white/10">+ ADD UNIT</button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {mode === 'quizzes' && (
+                        <div className="glass p-12 rounded-[4rem] space-y-10 border-white/5">
+                            <div className="flex justify-between items-center"><h3 className="text-3xl font-black text-white">Quiz Question Importer</h3><button onClick={() => { setEd({ target: 'quiz-json' }); setF({ s: 'pharmacology', u: 'Unit 1', t: 'General Quiz', json: '[]' }); }} className="px-8 py-3 bg-primary text-white rounded-2xl font-black text-xs shadow-xl">+ ADD VIA JSON</button></div>
+                            <div className="grid gap-6">
+                                {Object.keys(data.quizzes).map(s => Object.keys(data.quizzes[s]).map(u => Object.keys(data.quizzes[s][u]).map(t => (
+                                    <div key={`${s}-${u}-${t}`} className="glass p-8 rounded-[2.5rem] flex justify-between items-center border-white/5">
+                                        <div><h4 className="text-2xl font-black text-white tracking-tight">{t}</h4><p className="text-sm text-slate-500 font-bold uppercase tracking-widest">{s} • {u} • {data.quizzes[s][u][t].length} Questions</p></div>
+                                        <div className="flex gap-4"><button onClick={() => { setEd({ target: 'quiz-json' }); setF({ s, u, t, json: JSON.stringify(data.quizzes[s][u][t], null, 2) }); }} className="p-3 glass rounded-xl hover:text-primary transition-colors"><Icon name="edit" size={18}/></button><button onClick={() => { const copy = {...data.quizzes}; delete copy[s][u][t]; setters.setQuizzes(copy); }} className="p-3 glass rounded-xl text-accent hover:bg-accent hover:text-white transition-all"><Icon name="trash" size={18}/></button></div>
+                                    </div>
+                                ))))}
+                            </div>
+                        </div>
+                    )}
+
+                    {mode === 'library' && (
+                        <div className="glass p-12 rounded-[4rem] space-y-12 border-white/5">
+                            <div className="flex justify-between items-center"><h3 className="text-3xl font-black text-white">Library Management</h3><button onClick={() => { setEd({ target: 'library', u: -1 }); setF({ cat: 'Pharmacology', title: '', author: '', url: '' }); }} className="px-8 py-3 bg-primary text-white rounded-2xl font-black text-xs shadow-xl">+ ADD NEW BOOK</button></div>
+                            <div className="grid md:grid-cols-2 gap-10">
+                                {Object.keys(data.library).map(cat => (
+                                    <div key={cat} className="glass p-10 rounded-[3rem] space-y-8 border-white/5">
+                                        <h3 className="text-2xl font-black text-white flex items-center gap-4"><span className="w-8 h-1 bg-primary rounded-full"></span>{cat}</h3>
+                                        <div className="space-y-4">
+                                            {data.library[cat].map((b, i) => (
+                                                <div key={i} className="flex justify-between items-center bg-white/5 p-6 rounded-[2rem] border border-white/5 hover:bg-white/10 transition-all">
+                                                    <div><p className="font-black text-white text-lg tracking-tight">{b.title}</p><p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">{b.author}</p></div>
+                                                    <div className="flex gap-3"><button onClick={() => { setEd({ target: 'library', u: i }); setF({...b, cat}); }} className="p-3 rounded-xl glass hover:text-primary transition-colors"><Icon name="edit" size={18}/></button><button onClick={() => { setF({cat}); del('library', i); }} className="p-3 rounded-xl glass text-accent hover:bg-accent hover:text-white transition-all"><Icon name="trash" size={18}/></button></div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {mode === 'notifs' && (
+                        <div className="glass p-12 rounded-[4rem] space-y-12 border-white/5">
+                            <div className="flex justify-between items-center"><h3 className="text-3xl font-black text-white">Notifications</h3><button onClick={() => { setEd({ target: 'notif', u: -1 }); setF({ title: '', message: '', link: '' }); }} className="px-8 py-3 bg-primary text-white rounded-2xl font-black text-xs shadow-xl">+ ADD NEW POST</button></div>
+                            <div className="space-y-6">
+                                {data.notifications.map((n, i) => (
+                                    <div key={n.id} className="glass p-8 rounded-[2.5rem] flex justify-between items-center border-white/5">
+                                        <div><h4 className="text-2xl font-black text-white">{n.title}</h4><p className="text-sm text-slate-500">{n.date}</p></div>
+                                        <div className="flex gap-4"><button onClick={() => { setEd({ target: 'notif', u: i }); setF({...n}); }} className="p-3 rounded-xl glass hover:text-primary transition-colors"><Icon name="edit" size={18}/></button><button onClick={() => del('notifs', i)} className="p-3 rounded-xl glass text-accent hover:bg-accent hover:text-white transition-all"><Icon name="trash" size={18}/></button></div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {mode === 'ai' && (
+                        <div className="glass p-12 rounded-[4rem] space-y-12 border-white/5">
+                            <div className="flex justify-between items-center"><h3 className="text-3xl font-black text-white">AI Hub Management</h3><button onClick={() => { setEd({ target: 'ai', u: -1 }); setF({ category: 'General', name: '', description: '', url: '' }); }} className="px-8 py-3 bg-primary text-white rounded-2xl font-black text-xs shadow-xl">+ ADD NEW AI TOOL</button></div>
+                            <div className="grid md:grid-cols-3 gap-6">
+                                {data.aiLinks.map((a, i) => (
+                                    <div key={i} className="glass p-8 rounded-[2.5rem] space-y-4 border-white/5">
+                                        <h4 className="text-2xl font-black text-white">{a.name}</h4>
+                                        <p className="text-xs text-slate-500">{a.category}</p>
+                                        <div className="flex gap-2"><button onClick={() => { setEd({ target: 'ai', u: i }); setF({...a}); }} className="flex-1 py-2 glass rounded-xl text-[10px] font-black">Edit</button><button onClick={() => del('ai', i)} className="flex-1 py-2 glass text-accent rounded-xl text-[10px] font-black">Delete</button></div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                    
+                    {/* Reuse other modes from previous implementation */}
+                    {mode === 'students' && (
+                        <div className="glass rounded-[3.5rem] overflow-hidden border-white/5 shadow-3xl">
+                            {data.students.length === 0 ? (
+                                <div className="p-20 text-center space-y-4">
+                                    <Icon name="user" size={60} className="mx-auto text-slate-700"/>
+                                    <p className="text-xl font-black text-slate-500 uppercase tracking-widest">No Students Registered Yet</p>
+                                </div>
+                            ) : (
+                                <table className="w-full text-left">
+                                    <thead className="bg-white/5 border-b border-white/10 text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]"><tr><th className="p-10">Student Profile</th><th className="p-10 text-center">Permissions</th></tr></thead>
+                                    <tbody className="divide-y divide-white/5">
+                                        {data.students.map((s, i) => (
+                                            <tr key={s.email} className={`hover:bg-white/5 transition-all ${s.blocked ? 'bg-red-500/5' : ''}`}>
+                                                <td className="p-10 flex items-center gap-6">
+                                                    <img src={s.profileImage || s.img || `https://api.dicebear.com/7.x/avataaars/svg?seed=${s.email}`} className="w-16 h-16 rounded-full border-2 border-white/10 shadow-xl object-cover"/>
+                                                    <div><p className="font-black text-white text-2xl tracking-tight">{s.name}</p><p className="text-xs text-slate-500 font-bold uppercase tracking-widest">{s.email}</p></div>
+                                                </td>
+                                                <td className="p-10">
+                                                    <div className="flex justify-center gap-4">
+                                                        <button type="button" onClick={async () => {
+                                                            const u = apiUrl('/api/admin/student');
+                                                            if (u && adminKey) {
+                                                                try {
+                                                                    const r = await fetch(u, {
+                                                                        method: 'PATCH',
+                                                                        headers: { 'Content-Type': 'application/json', 'X-Admin-Key': adminKey },
+                                                                        body: JSON.stringify({ email: s.email, blocked: !s.blocked })
+                                                                    });
+                                                                    if (r.ok) {
+                                                                        const j = await r.json();
+                                                                        if (j.students) setters.setStudents(j.students);
+                                                                        return;
+                                                                    }
+                                                                } catch (_) { /* fall through */ }
+                                                            }
+                                                            setters.setStudents(data.students.map(st => st.email === s.email ? {...st, blocked: !st.blocked} : st));
+                                                        }} className={`px-6 py-3 rounded-2xl font-black text-xs uppercase tracking-widest transition-all ${s.blocked ? 'bg-green-500 text-white shadow-xl shadow-green-500/20' : 'glass text-accent border-accent/20 hover:bg-accent hover:text-white'}`}>{s.blocked ? 'Unblock' : 'Block Student'}</button>
+                                                        <button type="button" onClick={async () => {
+                                                            const base = apiUrl(`/api/admin/student/${encodeURIComponent(s.email)}`);
+                                                            if (base && adminKey) {
+                                                                try {
+                                                                    const r = await fetch(base, { method: 'DELETE', headers: { 'X-Admin-Key': adminKey } });
+                                                                    if (r.ok) {
+                                                                        const j = await r.json();
+                                                                        if (j.students) setters.setStudents(j.students);
+                                                                        return;
+                                                                    }
+                                                                } catch (_) { /* fall through */ }
+                                                            }
+                                                            setters.setStudents(data.students.filter((_, j) => j !== i));
+                                                        }} className="p-4 rounded-2xl glass text-accent hover:bg-accent hover:text-white transition-all"><Icon name="trash" size={20}/></button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            )}
+                        </div>
+                    )}
+
+                    {ed.target && (
+                        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/95 backdrop-blur-3xl p-6">
+                            <div className="glass p-12 rounded-[4rem] w-full max-w-xl space-y-8 border-white/10 shadow-3xl overflow-y-auto max-h-[90vh]">
+                                <h3 className="text-4xl font-black text-white tracking-tighter capitalize">Edit {ed.target}</h3>
+                                <div className="space-y-6">
+                                    {ed.target === 'subject-edit' ? <input className="w-full bg-white/5 p-6 rounded-3xl text-white outline-none border border-white/5 font-bold" placeholder="Subject Name" value={f.newName} onChange={e => setF({...f, newName: e.target.value})} /> :
+                                     ed.target === 'unit' ? <input className="w-full bg-white/5 p-6 rounded-3xl text-white outline-none border border-white/5 font-bold" placeholder="Unit Title" value={f.title} onChange={e => setF({...f, title: e.target.value})} /> :
+                                     ed.target === 'note' ? <Fragment><input className="w-full bg-white/5 p-6 rounded-3xl text-white outline-none border border-white/5 font-bold" placeholder="Link Text" value={f.text} onChange={e => setF({...f, text: e.target.value})} /><input className="w-full bg-white/5 p-6 rounded-3xl text-white outline-none border border-white/5" placeholder="Document URL" value={f.url} onChange={e => setF({...f, url: e.target.value})} /></Fragment> :
+                                     ed.target === 'quiz-json' ? <Fragment>
+                                        <div className="flex justify-between items-center mb-2"><label className="text-[10px] font-black text-primary uppercase tracking-[0.2em]">Paste JSON Data</label><button type="button" onClick={() => setF({...f, json: '[{"q":"What is ...?","o":["Opt A","Opt B","Opt C","Opt D"],"c":0}]'})} className="text-[10px] font-black text-white bg-white/10 px-4 py-2 rounded-full border border-white/10 hover:bg-primary transition-all">Copy Template</button></div>
+                                        <div className="grid grid-cols-3 gap-4 mb-4"><input className="w-full bg-white/5 p-4 rounded-xl text-white outline-none border border-white/5 text-xs focus:border-primary/40" placeholder="Subject Name" value={f.s} onChange={e => setF({...f, s: e.target.value})} /><input className="w-full bg-white/5 p-4 rounded-xl text-white outline-none border border-white/5 text-xs focus:border-primary/40" placeholder="Unit Title" value={f.u} onChange={e => setF({...f, u: e.target.value})} /><input className="w-full bg-white/5 p-4 rounded-xl text-white outline-none border border-white/5 text-xs focus:border-primary/40" placeholder="Topic Name" value={f.t} onChange={e => setF({...f, t: e.target.value})} /></div>
+                                        <textarea className="w-full bg-white/5 p-6 rounded-3xl text-white outline-none border border-white/5 h-60 font-mono text-[10px] leading-relaxed focus:border-primary/40" placeholder='[{"q":"Question?","o":["A","B"],"c":0}]' value={f.json} onChange={e => setF({...f, json: e.target.value})} />
+                                        <p className="text-[9px] text-slate-500 italic mt-2">* Note: "c" is the index of the correct answer (0, 1, 2, or 3).</p>
+                                     </Fragment> :
+                                     ed.target === 'library' ? <Fragment>
+                                        <div className="space-y-4">
+                                            <div><label className="text-[10px] font-black text-slate-500 ml-4 uppercase tracking-widest">Book Title</label><input className="w-full bg-white/5 p-5 rounded-2xl text-white outline-none border border-white/5 font-bold" placeholder="e.g. Pharmacology Basics" value={f.title} onChange={e => setF({...f, title: e.target.value})} /></div>
+                                            <div><label className="text-[10px] font-black text-slate-500 ml-4 uppercase tracking-widest">Author Name</label><input className="w-full bg-white/5 p-5 rounded-2xl text-white outline-none border border-white/5" placeholder="e.g. Dr. Mani" value={f.author} onChange={e => setF({...f, author: e.target.value})} /></div>
+                                            <div><label className="text-[10px] font-black text-slate-500 ml-4 uppercase tracking-widest">Category</label><input className="w-full bg-white/5 p-5 rounded-2xl text-white outline-none border border-white/5" placeholder="e.g. Pharmacology" value={f.cat} onChange={e => setF({...f, cat: e.target.value})} /></div>
+                                            <div><label className="text-[10px] font-black text-primary ml-4 uppercase tracking-widest flex items-center gap-2"><Icon name="link" size={12}/> Book URL (Google Drive/PDF Link)</label><input className="w-full bg-white/5 p-5 rounded-2xl text-white outline-none border border-primary/20" placeholder="https://drive.google.com/..." value={f.url} onChange={e => setF({...f, url: e.target.value})} /></div>
+                                        </div>
+                                     </Fragment> :
+                                     ed.target === 'ai' ? <Fragment>
+                                        <div className="space-y-4">
+                                            <input className="w-full bg-white/5 p-5 rounded-2xl text-white outline-none border border-white/5 font-bold" placeholder="Tool Name" value={f.name} onChange={e => setF({...f, name: e.target.value})} />
+                                            <input className="w-full bg-white/5 p-5 rounded-2xl text-white outline-none border border-white/5" placeholder="Category" value={f.category} onChange={e => setF({...f, category: e.target.value})} />
+                                            <input className="w-full bg-white/5 p-5 rounded-2xl text-white outline-none border border-white/5" placeholder="URL" value={f.url} onChange={e => setF({...f, url: e.target.value})} />
+                                            <textarea className="w-full bg-white/5 p-5 rounded-2xl text-white outline-none border border-white/5 h-24" placeholder="Description" value={f.description} onChange={e => setF({...f, description: e.target.value})} />
+                                        </div>
+                                     </Fragment> :
+                                     ed.target === 'notif' ? <Fragment>
+                                        <div className="space-y-4">
+                                            <input className="w-full bg-white/5 p-5 rounded-2xl text-white outline-none border border-white/5 font-bold" placeholder="Notice Title" value={f.title} onChange={e => setF({...f, title: e.target.value})} />
+                                            <textarea className="w-full bg-white/5 p-5 rounded-2xl text-white outline-none border border-white/5 h-32" placeholder="Message" value={f.message} onChange={e => setF({...f, message: e.target.value})} />
+                                            <input className="w-full bg-white/5 p-5 rounded-2xl text-white outline-none border border-white/5" placeholder="Optional Link" value={f.link} onChange={e => setF({...f, link: e.target.value})} />
+                                        </div>
+                                     </Fragment> : null}
+                                </div>
+                                <div className="flex gap-6 pt-4"><button onClick={save} className="flex-1 py-6 bg-primary text-white rounded-3xl font-black text-2xl shadow-xl">Confirm Changes</button><button onClick={() => {setEd({u:null}); setF({});}} className="flex-1 py-6 glass text-white rounded-3xl font-black text-2xl">Discard</button></div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const Icon = ({ name, size = 20, className = "" }) => {
+            const i = {
+                home: <Fragment><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></Fragment>,
+                subject: <Fragment><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-0 5H20"/></Fragment>,
+                library: <Fragment><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></Fragment>,
+                quiz: <Fragment><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></Fragment>,
+                notifications: <Fragment><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></Fragment>,
+                lectures: <Fragment><path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2" ry="2"/></Fragment>,
+                ai: <Fragment><path d="M12 2v8"/><path d="M2 12h8"/><path d="M12 22v-8"/><path d="M22 12h-8"/></Fragment>,
+                lock: <Fragment><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></Fragment>,
+                trash: <Fragment><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></Fragment>,
+                edit: <Fragment><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></Fragment>,
+                link: <Fragment><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></Fragment>,
+                chevron: <Fragment><path d="m6 9 6 6 6-6"/></Fragment>,
+                logout: <Fragment><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></Fragment>,
+                instagram: <Fragment><rect width="20" height="20" x="2" y="2" rx="5" ry="5"/><path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"/><line x1="17.5" x2="17.51" y1="6.5" y2="6.5"/></Fragment>,
+                linkedin: <Fragment><path d="M16 8a6 6 0 0 1 6 6v7h-4v-7a2 2 0 0 0-2-2 2 2 0 0 0-2 2v7h-4v-7a6 6 0 0 1 6-6z"/><rect width="4" height="12" x="2" y="9"/></Fragment>,
+                phone: <Fragment><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2"/></Fragment>,
+                email: <Fragment><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></Fragment>,
+                youtube: <Fragment><path d="M22.54 6.42a2.78 2.78 0 0 0-1.94-2C18.88 4 12 4 12 4s-6.88 0-8.6.46a2.78 2.78 0 0 0-1.94 2A29 29 0 0 0 1 11.75a29 29 0 0 0 .46 5.33A2.78 2.78 0 0 0 3.4 19c1.72.46 8.6.46 8.6.46s6.88 0 8.6-.46a2.78 2.78 0 0 0 1.94-2 29 29 0 0 0 .46-5.25 29 29 0 0 0-.46-5.33z"/><polygon points="9.75 15.02 15.5 11.75 9.75 8.48 9.75 15.02"/></Fragment>,
+                user: <Fragment><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></Fragment>
+            };
+            return (<svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>{i[name] || <circle cx="12" cy="12" r="10" />}</svg>);
+        };
+
+        function initThree() {
+            const c = document.getElementById('three-canvas'); const s = new THREE.Scene(); const cam = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            const r = new THREE.WebGLRenderer({ antialias: true, alpha: true }); r.setSize(window.innerWidth, window.innerHeight); r.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2)); c.appendChild(r.domElement);
+            const sph = new THREE.Mesh(new THREE.IcosahedronGeometry(2, 0), new THREE.MeshPhongMaterial({ color: '#6366f1', wireframe: true, transparent: true, opacity: 0.1 })); s.add(sph);
+            const l = new THREE.PointLight(0xffffff, 1); l.position.set(5, 5, 5); s.add(l); cam.position.z = 5;
+            const onResize = () => {
+                cam.aspect = window.innerWidth / window.innerHeight;
+                cam.updateProjectionMatrix();
+                r.setSize(window.innerWidth, window.innerHeight);
+            };
+            window.addEventListener('resize', onResize);
+            function a() { requestAnimationFrame(a); sph.rotation.x += 0.001; sph.rotation.y += 0.002; r.render(s, cam); } a();
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
